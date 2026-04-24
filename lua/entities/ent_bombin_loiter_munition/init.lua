@@ -24,7 +24,6 @@ ENT.FadeDuration  = 2.0
 
 ENT.DIVE_Speed         = 1800
 ENT.DIVE_TrackInterval = 0.1
-ENT.DIVE_GravityMult   = 1.5
 
 -- ============================================================
 -- INITIALIZE
@@ -127,8 +126,6 @@ function ENT:Initialize()
 		self.PhysObj:Wake()
 		self.PhysObj:EnableGravity(false)
 	end
-
-	self.DiveGravityVel = Vector(0, 0, 0)
 
 	sound.Play(ENGINE_START_SOUND, spawnPos, 90, 100, 1.0)
 
@@ -414,7 +411,6 @@ function ENT:InitDive(ct)
 	self.DiveWobblePhase  = 0
 	self.DiveWobblePhaseV = math.Rand(0, math.pi * 2)
 	self.DiveSpeedCurrent = self.DiveSpeedMin
-	self.DiveGravityVel   = Vector(0, 0, 0)
 
 	self.DiveAimOffset = Vector(
 		math.Rand(-400, 400),
@@ -482,10 +478,7 @@ function ENT:UpdateDive(ct)
 		flatRight * math.sin(self.DiveWobblePhase)  * self.DiveWobbleAmp  * wobbleScale +
 		upPerp    * math.sin(self.DiveWobblePhaseV) * self.DiveWobbleAmpV * wobbleScale
 
-	-- Gravity accumulation (autonomous craft — dive mechanic)
-	self.DiveGravityVel = self.DiveGravityVel + Vector(0, 0, -600 * self.DIVE_GravityMult) * dt
-
-	local totalVel = dir * self.DiveSpeedCurrent + wobbleVel + self.DiveGravityVel
+	local totalVel = dir * self.DiveSpeedCurrent + wobbleVel
 
 	if totalVel:LengthSqr() > 0.01 then
 		local travelDir = totalVel:GetNormalized()
