@@ -2,6 +2,8 @@ AddCSLuaFile("cl_init.lua")
 AddCSLuaFile("shared.lua")
 include("shared.lua")
 
+util.AddNetworkString("bombin_loiter_damage_tier")
+
 -- ============================================================
 -- PASS SOUNDS & ENGINE
 -- ============================================================
@@ -29,6 +31,25 @@ ENT.DIVE_TrackInterval = 0.1
 ENT.DIVE_GravityMult   = 1.5
 
 -- ============================================================
+-- DAMAGE TIER HELPERS
+-- ============================================================
+
+local function CalcTier(hp, maxHP)
+	local pct = hp / maxHP
+	if pct > 0.66 then return 0
+	elseif pct > 0.33 then return 1
+	elseif hp > 0 then return 2
+	else return 3 end
+end
+
+local function BroadcastTier(ent, tier)
+	net.Start("bombin_loiter_damage_tier")
+		net.WriteUInt(ent:EntIndex(), 16)
+		net.WriteUInt(tier, 2)
+	net.Broadcast()
+end
+
+-- ============================================================
 -- INITIALIZE
 -- ============================================================
 
@@ -42,6 +63,7 @@ function ENT:Initialize()
 	self.DIVE_ExplosionRadius = self:GetVar("DIVE_ExplosionRadius", 600)
 
 	self.MaxHP = 200
+	self.DamageTier = 0
 
 	if self.CallDir:LengthSqr() <= 1 then self.CallDir = Vector(1,0,0) end
 	self.CallDir.z = 0
@@ -242,6 +264,8 @@ function ENT:SetDestroyed()
 	self:SetNWBool("Destroyed", true)
 	self.DestroyedTime = CurTime()
 
+	BroadcastTier(self, 3)
+
 	if IsValid(self.PhysObj) then
 		self.TumbleAngVel = self.PhysObj:GetAngleVelocity() + Vector(
 			math.Rand(-120, 120),
@@ -285,6 +309,12 @@ function ENT:OnTakeDamage(dmginfo)
 	local hp = self:GetNWInt("HP", self.MaxHP or 200)
 	hp = hp - dmginfo:GetDamage()
 	self:SetNWInt("HP", hp)
+
+	local newTier = CalcTier(math.max(hp, 0), self.MaxHP)
+	if newTier ~= self.DamageTier then
+		self.DamageTier = newTier
+		BroadcastTier(self, newTier)
+	end
 
 	if hp <= 0 and not self:IsDestroyed() then
 		self:Debug("Shot down!")
@@ -362,14 +392,13 @@ function ENT:Think()
 end
 
 -- ============================================================
--- FLIGHT  (polar orbit — only runs when NOT diving and NOT destroyed)
+-- FLIGHT  (polar orbit)
 -- ============================================================
 
 function ENT:PhysicsUpdate(phys)
 	if not self.DieTime or not self.sky then return end
 	if CurTime() >= self.DieTime then self:Remove() return end
 
-	-- Destroyed: tumble under gravity
 	if self:IsDestroyed() then
 		local dt = FrameTime()
 		if dt <= 0 then dt = 0.01 end
@@ -461,7 +490,7 @@ function ENT:PhysicsUpdate(phys)
 	end
 
 	if not self:IsInWorld() then
-		self:Debug("Out of world — removing")
+		self:Debug("Out of world -- removing")
 		self:Remove()
 	end
 end
@@ -509,7 +538,7 @@ function ENT:PickNewWeapon(ct)
 end
 
 -- ============================================================
--- SLOT 3 — DIVE
+-- SLOT 3 -- DIVE
 -- ============================================================
 
 function ENT:InitDive(ct)
@@ -561,7 +590,7 @@ function ENT:InitDive(ct)
 		self.PhysObj:EnableGravity(false)
 	end
 
-	self:Debug("DIVE: committed — aim offset " .. tostring(self.DiveAimOffset))
+	self:Debug("DIVE: committed -- aim offset " .. tostring(self.DiveAimOffset))
 end
 
 function ENT:UpdateDive(ct)
@@ -622,7 +651,6 @@ function ENT:UpdateDive(ct)
 		flatRight * math.sin(self.DiveWobblePhase)  * self.DiveWobbleAmp  * wobbleScale +
 		upPerp    * math.sin(self.DiveWobblePhaseV) * self.DiveWobbleAmpV * wobbleScale
 
-	-- Gravity accumulation (autonomous craft — dive mechanic)
 	self.DiveGravityVel = self.DiveGravityVel + Vector(0, 0, -600 * self.DIVE_GravityMult) * dt
 
 	local totalVel = dir * self.DiveSpeedCurrent + wobbleVel + self.DiveGravityVel
