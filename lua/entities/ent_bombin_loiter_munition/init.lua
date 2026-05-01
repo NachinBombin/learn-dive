@@ -14,7 +14,7 @@ local PASS_SOUNDS = {
 }
 
 local ENGINE_START_SOUND = "lvs_darklord/mi_engine/mi24_engine_start_exterior.wav"
-local ENGINE_LOOP_SOUND  = "^lvs_darklord/rotors/rotor_loop_close.wav"
+local ENGINE_LOOP_SOUND  = "^lyutyy/engine_high.wav"
 local ENGINE_DIST_SOUND  = "^lvs_darklord/rotors/rotor_loop_dist.wav"
 local SHARD_MODEL        = "models/props_c17/FurnitureDrawer001a_Shard01.mdl"
 local SHARD_LIFE         = 8
@@ -28,7 +28,7 @@ ENT.FadeDuration  = 2.0
 
 ENT.DIVE_Speed         = 1800
 ENT.DIVE_TrackInterval = 0.1
-ENT.DIVE_GravityMult   = 1.5
+ENT.DIVE_GravityMult   = 1.1
 
 -- ============================================================
 -- DAMAGE TIER HELPERS
