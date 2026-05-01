@@ -1,4 +1,5 @@
 include("shared.lua")
+include("cl_trailsystem.lua")
 
 -- ================================================================
 --  DAMAGE TIER FX  (Bayraktar TB2)
