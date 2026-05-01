@@ -147,6 +147,15 @@ function ENT:Initialize()
 	self.WanderRateX   = math.Rand(0.004, 0.010)
 	self.WanderRateY   = math.Rand(0.003, 0.009)
 
+	-- Sky / obstacle evasion probes (ported from AN-71)
+	self.SkyYawBias      = 0
+	self.SkyProbeDist    = math.max(1200, self.Speed * 6)
+	self.SkyProbeLastHit = 0
+	self.ObsLastEval     = 0
+	self.ObsYawBias      = 0
+	self.ObsAltBias      = 0
+	self.ObsConsecHits   = 0
+
 	self.PhysObj = self:GetPhysicsObject()
 	if IsValid(self.PhysObj) then
 		self.PhysObj:Wake()
@@ -392,7 +401,124 @@ function ENT:Think()
 end
 
 -- ============================================================
--- FLIGHT  (polar orbit)
+-- SKY PROBE EVASION  (AN-71 system)
+-- ============================================================
+
+function ENT:EvaluateSkyProbes(forward, pos)
+	local probeOffsets = { -60, -30, 0, 30, 60 }
+	local hitCount     = 0
+	local biasSide     = 0
+
+	for _, yawOff in ipairs(probeOffsets) do
+		local probeAng = Angle(0, self.ang.y + yawOff, 0)
+		local probeDir = probeAng:Forward()
+		probeDir.z     = 0.18
+		probeDir:Normalize()
+
+		local trSky = util.TraceLine({
+			start  = pos,
+			endpos = pos + probeDir * self.SkyProbeDist,
+			filter = self,
+			mask   = MASK_SOLID_BRUSHONLY,
+		})
+
+		if trSky.Hit and trSky.HitSky then
+			hitCount = hitCount + 1
+			if yawOff >= 0 then
+				biasSide = biasSide - 1
+			else
+				biasSide = biasSide + 1
+			end
+		end
+		if trSky.Hit and trSky.HitSky and math.abs(yawOff) <= 30 then
+			self.SkyProbeLastHit = CurTime()
+		end
+	end
+
+	if hitCount > 0 then
+		local urgency = (CurTime() - self.SkyProbeLastHit < 0.5) and 2.0 or 1.0
+		self.SkyYawBias = (biasSide >= 0 and 1 or -1) * 0.25 * urgency * self.OrbitDir
+	else
+		self.SkyYawBias = self.SkyYawBias * 0.85
+		if math.abs(self.SkyYawBias) < 0.001 then self.SkyYawBias = 0 end
+	end
+end
+
+-- ============================================================
+-- OBSTACLE PROBE EVASION  (AN-71 system)
+-- ============================================================
+
+function ENT:EvaluateObstacleProbes(forward, pos)
+	local ct = CurTime()
+	if ct - self.ObsLastEval < 0.08 then return end
+	self.ObsLastEval = ct
+
+	local probeDist  = math.max(800, self.Speed * 3)
+	local yawAngles  = { -80, -40, -15, 0, 15, 40, 80 }
+	local hitLeft    = 0
+	local hitRight   = 0
+	local hitFront   = 0
+
+	for _, yawOff in ipairs(yawAngles) do
+		local probeAng = Angle(0, self.ang.y + yawOff, 0)
+		local probeDir = probeAng:Forward()
+		probeDir.z     = 0
+
+		local tr = util.TraceLine({
+			start  = pos,
+			endpos = pos + probeDir * probeDist,
+			filter = self,
+			mask   = MASK_SOLID_BRUSHONLY,
+		})
+
+		if tr.Hit and not tr.HitSky then
+			local urgency = 1 + (1 - tr.Fraction) * 2
+			if yawOff < -10 then
+				hitLeft  = hitLeft  + urgency
+			elseif yawOff > 10 then
+				hitRight = hitRight + urgency
+			else
+				hitFront = hitFront + urgency
+			end
+		end
+	end
+
+	local totalHits = hitLeft + hitRight + hitFront
+	if totalHits > 0 then
+		self.ObsConsecHits = self.ObsConsecHits + 1
+	else
+		self.ObsConsecHits = 0
+	end
+
+	-- Escalation: 4+ consecutive hits => reverse orbit direction
+	if self.ObsConsecHits >= 4 then
+		self.OrbitDir      = -self.OrbitDir
+		self.ObsConsecHits = 0
+		self:Debug("Obstacle escalation: orbit direction reversed")
+	end
+
+	if totalHits > 0 then
+		local urgencyScale = (self.ObsConsecHits >= 2) and 2.0 or 1.0
+		if hitRight > hitLeft then
+			self.ObsYawBias = -0.3 * urgencyScale
+		elseif hitLeft > hitRight then
+			self.ObsYawBias = 0.3 * urgencyScale
+		else
+			self.ObsYawBias = self.OrbitDir * 0.3 * urgencyScale
+		end
+		if hitFront > 1.5 then
+			self.ObsAltBias = math.Rand(120, 260)
+		end
+	else
+		self.ObsYawBias = self.ObsYawBias * 0.80
+		self.ObsAltBias = self.ObsAltBias * 0.92
+		if math.abs(self.ObsYawBias) < 0.001 then self.ObsYawBias = 0 end
+		if math.abs(self.ObsAltBias) < 1     then self.ObsAltBias = 0 end
+	end
+end
+
+-- ============================================================
+-- FLIGHT  (polar orbit + evasion)
 -- ============================================================
 
 function ENT:PhysicsUpdate(phys)
@@ -424,10 +550,12 @@ function ENT:PhysicsUpdate(phys)
 
 	if self.Diving then return end
 
-	local pos = self:GetPos()
-	local dt  = FrameTime()
+	local pos     = self:GetPos()
+	local forward = self:GetForward()
+	local dt      = FrameTime()
 	if dt <= 0 then dt = 0.01 end
 
+	-- Wander
 	self.WanderPhaseX = self.WanderPhaseX + self.WanderRateX
 	self.WanderPhaseY = self.WanderPhaseY + self.WanderRateY
 	self.CenterPos = Vector(
@@ -436,7 +564,14 @@ function ENT:PhysicsUpdate(phys)
 		self.BaseCenterPos.z
 	)
 
+	-- Evasion probes
+	self:EvaluateSkyProbes(forward, pos)
+	self:EvaluateObstacleProbes(forward, pos)
+
+	-- Orbit advance (with evasion biases injected)
 	self.OrbitAngSpeed = (self.Speed / self.OrbitRadius) * self.OrbitDir
+	                   + self.SkyYawBias
+	                   + self.ObsYawBias
 	self.OrbitAngle = self.OrbitAngle + self.OrbitAngSpeed * dt
 
 	local desiredX = self.CenterPos.x + math.cos(self.OrbitAngle) * self.OrbitRadius
@@ -458,7 +593,7 @@ function ENT:PhysicsUpdate(phys)
 	end
 	self.AltDriftCurrent = Lerp(self.AltDriftLerp, self.AltDriftCurrent, self.AltDriftTarget)
 
-	local liveAlt = self.AltDriftCurrent + jitter
+	local liveAlt = self.AltDriftCurrent + jitter + self.ObsAltBias
 
 	local posErr = Vector(desiredX - pos.x, desiredY - pos.y, 0)
 	local vel    = self:GetForward() * self.Speed
@@ -490,8 +625,12 @@ function ENT:PhysicsUpdate(phys)
 	end
 
 	if not self:IsInWorld() then
-		self:Debug("Out of world -- removing")
-		self:Remove()
+		self:Debug("Out of world -- recentering")
+		self:SetPos(Vector(self.CenterPos.x, self.CenterPos.y, self.sky))
+		self.OrbitAngle = math.atan2(
+			self:GetPos().y - self.CenterPos.y,
+			self:GetPos().x - self.CenterPos.x
+		)
 	end
 end
 
