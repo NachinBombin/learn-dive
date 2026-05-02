@@ -5,19 +5,12 @@ include("shared.lua")
 util.AddNetworkString("bombin_loiter_damage_tier")
 
 -- ============================================================
--- PASS SOUNDS & ENGINE
+-- SOUNDS
 -- ============================================================
 
-local PASS_SOUNDS = {
-	"lvs_darklord/rotors/rotor_loop_close.wav",
-	"lvs_darklord/rotors/rotor_loop_dist.wav",
-}
-
-local ENGINE_START_SOUND = "lvs_darklord/mi_engine/mi24_engine_start_exterior.wav"
-local ENGINE_LOOP_SOUND  = "^lyutyy/engine_high.wav"
-local ENGINE_DIST_SOUND  = "^lvs_darklord/rotors/rotor_loop_dist.wav"
-local SHARD_MODEL        = "models/props_c17/FurnitureDrawer001a_Shard01.mdl"
-local SHARD_LIFE         = 8
+local ENGINE_SOUND = "lyutyy/engine_high.wav"
+local SHARD_MODEL  = "models/props_c17/FurnitureDrawer001a_Shard01.mdl"
+local SHARD_LIFE   = 8
 
 -- ============================================================
 -- TUNING
@@ -83,7 +76,6 @@ function ENT:Initialize()
 	self.OrbitRadius = baseRadius * math.Rand(0.82, 1.18)
 	self.Speed       = baseSpeed  * math.Rand(0.85, 1.15)
 
-	-- AN-71 style: start just outside the orbit radius, facing tangent
 	self.OrbitDir    = (math.random(0, 1) == 0) and 1 or -1
 
 	local entryAngle  = math.Rand(0, math.pi * 2)
@@ -116,7 +108,6 @@ function ENT:Initialize()
 	self:SetNWInt("MaxHP", self.MaxHP)
 	self:SetNWBool("Destroyed", false)
 
-	-- Face tangent to orbit at spawn (AN-71 approach)
 	local tangent = Vector(-entryOffset.y, entryOffset.x, 0) * self.OrbitDir
 	local startAng = tangent:Angle()
 	self:SetAngles(Angle(0, startAng.y, 0))
@@ -126,7 +117,6 @@ function ENT:Initialize()
 	self.SmoothedPitch = 0
 	self.PrevYaw       = self:GetAngles().y
 
-	-- Altitude jitter (AN-71 sine-wave layer)
 	self.JitterPhase  = math.Rand(0, math.pi * 2)
 	self.JitterPhase2 = math.Rand(0, math.pi * 2)
 	self.JitterAmp1   = math.Rand(8,  18)
@@ -134,14 +124,12 @@ function ENT:Initialize()
 	self.JitterRate1  = math.Rand(0.030, 0.060)
 	self.JitterRate2  = math.Rand(0.007, 0.015)
 
-	-- Altitude drift (AN-71 slow wander)
 	self.AltDriftCurrent  = self.sky
 	self.AltDriftTarget   = self.sky
 	self.AltDriftNextPick = CurTime() + math.Rand(8, 20)
 	self.AltDriftRange    = 700
 	self.AltDriftLerp     = 0.003
 
-	-- Center wander
 	self.BaseCenterPos = Vector(self.CenterPos.x, self.CenterPos.y, self.CenterPos.z)
 	self.WanderPhaseX  = math.Rand(0, math.pi * 2)
 	self.WanderPhaseY  = math.Rand(0, math.pi * 2)
@@ -149,7 +137,6 @@ function ENT:Initialize()
 	self.WanderRateX   = math.Rand(0.004, 0.010)
 	self.WanderRateY   = math.Rand(0.003, 0.009)
 
-	-- Sky / obstacle evasion (AN-71)
 	self.SkyYawBias      = 0
 	self.SkyProbeDist    = math.max(1200, self.Speed * 6)
 	self.SkyProbeLastHit = 0
@@ -158,7 +145,6 @@ function ENT:Initialize()
 	self.ObsAltBias      = 0
 	self.ObsConsecHits   = 0
 
-	-- AN-71 forward-fly yaw state
 	self.flightYaw     = startAng.y
 	self.TurnDelay     = 0
 
@@ -170,25 +156,14 @@ function ENT:Initialize()
 
 	self.DiveGravityVel = Vector(0, 0, 0)
 
-	sound.Play(ENGINE_START_SOUND, spawnPos, 90, 100, 1.0)
-
-	self.RotorLoopClose = CreateSound(self, ENGINE_LOOP_SOUND)
-	if self.RotorLoopClose then
-		self.RotorLoopClose:SetSoundLevel(125)
-		self.RotorLoopClose:ChangePitch(100, 0)
-		self.RotorLoopClose:ChangeVolume(1.0, 0.5)
-		self.RotorLoopClose:Play()
+	-- Single engine loop
+	self.EngineLoop = CreateSound(self, ENGINE_SOUND)
+	if self.EngineLoop then
+		self.EngineLoop:SetSoundLevel(125)
+		self.EngineLoop:ChangePitch(100, 0)
+		self.EngineLoop:ChangeVolume(1.0, 0.5)
+		self.EngineLoop:Play()
 	end
-
-	self.RotorLoopDist = CreateSound(self, ENGINE_DIST_SOUND)
-	if self.RotorLoopDist then
-		self.RotorLoopDist:SetSoundLevel(125)
-		self.RotorLoopDist:ChangePitch(100, 0)
-		self.RotorLoopDist:ChangeVolume(1.0, 0.5)
-		self.RotorLoopDist:Play()
-	end
-
-	self.NextPassSound = CurTime() + math.Rand(5, 10)
 
 	-- Weapon state
 	self.CurrentWeapon   = nil
@@ -294,12 +269,16 @@ function ENT:SetDestroyed()
 	self:Ignite(20, 0)
 	self:SpawnDebrisShards()
 
-	if self.RotorLoopClose then
-		self.RotorLoopClose:ChangeVolume(0, 1.5)
-		self.RotorLoopClose:ChangePitch(55, 2.5)
-	end
-	if self.RotorLoopDist then
-		self.RotorLoopDist:ChangeVolume(0, 1.5)
+	-- Fade engine sound out over 1.5s then hard-stop to guarantee silence
+	local FADE = 1.5
+	if self.EngineLoop then
+		self.EngineLoop:ChangeVolume(0, FADE)
+		self.EngineLoop:ChangePitch(55, FADE + 0.5)
+		local snd = self.EngineLoop
+		self.EngineLoop = nil  -- prevent OnRemove double-stop
+		timer.Simple(FADE + 0.2, function()
+			if snd then snd:Stop() end
+		end)
 	end
 
 	local altAboveGround = self:GetPos().z - (self.sky - self.SkyHeightAdd)
@@ -363,15 +342,6 @@ function ENT:Think()
 	end
 	if IsValid(self.PhysObj) and self.PhysObj:IsAsleep() then
 		self.PhysObj:Wake()
-	end
-
-	-- Pass sounds (skip when destroyed)
-	if not self:IsDestroyed() and ct >= self.NextPassSound then
-		sound.Play(
-			table.Random(PASS_SOUNDS),
-			self:GetPos(), 100, math.random(96, 104), 1.0
-		)
-		self.NextPassSound = ct + math.Rand(6, 12)
 	end
 
 	-- Fade in/out
@@ -496,7 +466,6 @@ function ENT:EvaluateObstacleProbes(forward, pos)
 		self.ObsConsecHits = 0
 	end
 
-	-- 4+ consecutive hits => reverse orbit direction
 	if self.ObsConsecHits >= 4 then
 		self.OrbitDir      = -self.OrbitDir
 		self.ObsConsecHits = 0
@@ -531,7 +500,6 @@ function ENT:PhysicsUpdate(phys)
 	if not self.DieTime or not self.sky then return end
 	if CurTime() >= self.DieTime then self:Remove() return end
 
-	-- Destroyed tumble: hand off to Havok, just apply extra gravity & check ground
 	if self:IsDestroyed() then
 		local dt = FrameTime()
 		if dt <= 0 then dt = 0.01 end
@@ -555,7 +523,6 @@ function ENT:PhysicsUpdate(phys)
 		return
 	end
 
-	-- Dive physics handled in UpdateDive / Think
 	if self.Diving then return end
 
 	local dt = FrameTime()
@@ -564,7 +531,6 @@ function ENT:PhysicsUpdate(phys)
 	local pos     = self:GetPos()
 	local forward = self:GetForward()
 
-	-- Wander center
 	self.WanderPhaseX = self.WanderPhaseX + self.WanderRateX
 	self.WanderPhaseY = self.WanderPhaseY + self.WanderRateY
 	self.CenterPos = Vector(
@@ -573,13 +539,9 @@ function ENT:PhysicsUpdate(phys)
 		self.BaseCenterPos.z
 	)
 
-	-- Evasion probes
 	self:EvaluateSkyProbes(forward, pos)
 	self:EvaluateObstacleProbes(forward, pos)
 
-	-- AN-71 yaw steering:
-	--   1. If outside orbit radius, steer inward.
-	--   2. Sky and obstacle biases add on top.
 	local flat2D = Vector(pos.x - self.CenterPos.x, pos.y - self.CenterPos.y, 0)
 	local dist2D = flat2D:Length()
 
@@ -588,12 +550,10 @@ function ENT:PhysicsUpdate(phys)
 		self.TurnDelay = CurTime() + 0.02
 	end
 
-	-- Inject sky & obstacle yaw biases (degrees per second, scaled by dt)
 	self.flightYaw = self.flightYaw
 	              + math.deg(self.SkyYawBias) * dt
 	              + math.deg(self.ObsYawBias) * dt
 
-	-- Altitude: Lerp drift target, add sine jitter - all delivered via velocity (no SetPos Z)
 	self.JitterPhase  = self.JitterPhase  + self.JitterRate1
 	self.JitterPhase2 = self.JitterPhase2 + self.JitterRate2
 	local jitter = math.sin(self.JitterPhase)  * self.JitterAmp1
@@ -607,15 +567,13 @@ function ENT:PhysicsUpdate(phys)
 
 	local targetZ  = self.AltDriftCurrent + jitter + self.ObsAltBias
 	local altError = targetZ - pos.z
-	local velZ     = math.Clamp(altError * 2.5, -120, 120)  -- proportional Z velocity, no teleport
+	local velZ     = math.Clamp(altError * 2.5, -120, 120)
 
-	-- Build flat forward velocity from flightYaw
 	local yawRad    = math.rad(self.flightYaw)
 	local flatFwd   = Vector(math.cos(yawRad), math.sin(yawRad), 0)
 	local vel       = flatFwd * self.Speed
 	vel.z           = velZ
 
-	-- Smooth yaw display (AN-71 identical math)
 	local rawYawDelta = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
 	self.PrevYaw      = self.flightYaw
 
@@ -635,7 +593,6 @@ function ENT:PhysicsUpdate(phys)
 		phys:SetVelocity(vel)
 	end
 
-	-- Out-of-world recovery (no teleport: just rewind angle to face center)
 	if not self:IsInWorld() then
 		self:Debug("Out of world - recentering yaw")
 		local toCenter = self.CenterPos - pos
@@ -918,6 +875,10 @@ end
 -- ============================================================
 
 function ENT:OnRemove()
-	if self.RotorLoopClose then self.RotorLoopClose:Stop() end
-	if self.RotorLoopDist  then self.RotorLoopDist:Stop()  end
+	-- EngineLoop is nilled out in SetDestroyed after fade starts,
+	-- so this only fires for non-death removals (lifetime expiry, etc.)
+	if self.EngineLoop then
+		self.EngineLoop:Stop()
+		self.EngineLoop = nil
+	end
 end
