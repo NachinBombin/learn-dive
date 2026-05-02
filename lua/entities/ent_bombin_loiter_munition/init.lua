@@ -83,13 +83,11 @@ function ENT:Initialize()
 	self.OrbitRadius = baseRadius * math.Rand(0.82, 1.18)
 	self.Speed       = baseSpeed  * math.Rand(0.85, 1.15)
 
-	self.OrbitDir = (math.random(0, 1) == 0) and 1 or -1
+	-- AN-71 style: start just outside the orbit radius, facing tangent
+	self.OrbitDir    = (math.random(0, 1) == 0) and 1 or -1
 
-	self.OrbitAngle    = math.Rand(0, math.pi * 2)
-	self.OrbitAngSpeed = (self.Speed / self.OrbitRadius) * self.OrbitDir
-
-	local entryRad    = self.OrbitAngle
-	local entryOffset = Vector(math.cos(entryRad), math.sin(entryRad), 0)
+	local entryAngle  = math.Rand(0, math.pi * 2)
+	local entryOffset = Vector(math.cos(entryAngle), math.sin(entryAngle), 0)
 	local spawnPos    = self.CenterPos + entryOffset * (self.OrbitRadius * 1.05)
 	spawnPos.z        = self.sky
 
@@ -118,6 +116,7 @@ function ENT:Initialize()
 	self:SetNWInt("MaxHP", self.MaxHP)
 	self:SetNWBool("Destroyed", false)
 
+	-- Face tangent to orbit at spawn (AN-71 approach)
 	local tangent = Vector(-entryOffset.y, entryOffset.x, 0) * self.OrbitDir
 	local startAng = tangent:Angle()
 	self:SetAngles(Angle(0, startAng.y, 0))
@@ -127,6 +126,7 @@ function ENT:Initialize()
 	self.SmoothedPitch = 0
 	self.PrevYaw       = self:GetAngles().y
 
+	-- Altitude jitter (AN-71 sine-wave layer)
 	self.JitterPhase  = math.Rand(0, math.pi * 2)
 	self.JitterPhase2 = math.Rand(0, math.pi * 2)
 	self.JitterAmp1   = math.Rand(8,  18)
@@ -134,12 +134,14 @@ function ENT:Initialize()
 	self.JitterRate1  = math.Rand(0.030, 0.060)
 	self.JitterRate2  = math.Rand(0.007, 0.015)
 
+	-- Altitude drift (AN-71 slow wander)
 	self.AltDriftCurrent  = self.sky
 	self.AltDriftTarget   = self.sky
 	self.AltDriftNextPick = CurTime() + math.Rand(8, 20)
 	self.AltDriftRange    = 700
 	self.AltDriftLerp     = 0.003
 
+	-- Center wander
 	self.BaseCenterPos = Vector(self.CenterPos.x, self.CenterPos.y, self.CenterPos.z)
 	self.WanderPhaseX  = math.Rand(0, math.pi * 2)
 	self.WanderPhaseY  = math.Rand(0, math.pi * 2)
@@ -147,7 +149,7 @@ function ENT:Initialize()
 	self.WanderRateX   = math.Rand(0.004, 0.010)
 	self.WanderRateY   = math.Rand(0.003, 0.009)
 
-	-- Sky / obstacle evasion probes (ported from AN-71)
+	-- Sky / obstacle evasion (AN-71)
 	self.SkyYawBias      = 0
 	self.SkyProbeDist    = math.max(1200, self.Speed * 6)
 	self.SkyProbeLastHit = 0
@@ -155,6 +157,10 @@ function ENT:Initialize()
 	self.ObsYawBias      = 0
 	self.ObsAltBias      = 0
 	self.ObsConsecHits   = 0
+
+	-- AN-71 forward-fly yaw state
+	self.flightYaw     = startAng.y
+	self.TurnDelay     = 0
 
 	self.PhysObj = self:GetPhysicsObject()
 	if IsValid(self.PhysObj) then
@@ -304,7 +310,7 @@ function ENT:SetDestroyed()
 		self.CurrentWeapon = nil
 	end
 
-	self:Debug("DESTROYED -- boom in " .. math.Round(delay,1) .. "s")
+	self:Debug("DESTROYED - boom in " .. math.Round(delay,1) .. "s")
 end
 
 -- ============================================================
@@ -368,7 +374,7 @@ function ENT:Think()
 		self.NextPassSound = ct + math.Rand(6, 12)
 	end
 
-	-- Fade in/out (skip when destroyed)
+	-- Fade in/out
 	if not self:IsDestroyed() then
 		local age  = ct - self.SpawnTime
 		local left = self.DieTime - ct
@@ -401,7 +407,7 @@ function ENT:Think()
 end
 
 -- ============================================================
--- SKY PROBE EVASION  (AN-71 system)
+-- SKY PROBE EVASION (AN-71)
 -- ============================================================
 
 function ENT:EvaluateSkyProbes(forward, pos)
@@ -410,7 +416,7 @@ function ENT:EvaluateSkyProbes(forward, pos)
 	local biasSide     = 0
 
 	for _, yawOff in ipairs(probeOffsets) do
-		local probeAng = Angle(0, self.ang.y + yawOff, 0)
+		local probeAng = Angle(0, self.flightYaw + yawOff, 0)
 		local probeDir = probeAng:Forward()
 		probeDir.z     = 0.18
 		probeDir:Normalize()
@@ -445,7 +451,7 @@ function ENT:EvaluateSkyProbes(forward, pos)
 end
 
 -- ============================================================
--- OBSTACLE PROBE EVASION  (AN-71 system)
+-- OBSTACLE PROBE EVASION (AN-71)
 -- ============================================================
 
 function ENT:EvaluateObstacleProbes(forward, pos)
@@ -453,14 +459,14 @@ function ENT:EvaluateObstacleProbes(forward, pos)
 	if ct - self.ObsLastEval < 0.08 then return end
 	self.ObsLastEval = ct
 
-	local probeDist  = math.max(800, self.Speed * 3)
-	local yawAngles  = { -80, -40, -15, 0, 15, 40, 80 }
-	local hitLeft    = 0
-	local hitRight   = 0
-	local hitFront   = 0
+	local probeDist = math.max(800, self.Speed * 3)
+	local yawAngles = { -80, -40, -15, 0, 15, 40, 80 }
+	local hitLeft   = 0
+	local hitRight  = 0
+	local hitFront  = 0
 
 	for _, yawOff in ipairs(yawAngles) do
-		local probeAng = Angle(0, self.ang.y + yawOff, 0)
+		local probeAng = Angle(0, self.flightYaw + yawOff, 0)
 		local probeDir = probeAng:Forward()
 		probeDir.z     = 0
 
@@ -490,7 +496,7 @@ function ENT:EvaluateObstacleProbes(forward, pos)
 		self.ObsConsecHits = 0
 	end
 
-	-- Escalation: 4+ consecutive hits => reverse orbit direction
+	-- 4+ consecutive hits => reverse orbit direction
 	if self.ObsConsecHits >= 4 then
 		self.OrbitDir      = -self.OrbitDir
 		self.ObsConsecHits = 0
@@ -518,13 +524,14 @@ function ENT:EvaluateObstacleProbes(forward, pos)
 end
 
 -- ============================================================
--- FLIGHT  (polar orbit + evasion)
+-- FLIGHT  (AN-71 forward-fly orbit - no teleports)
 -- ============================================================
 
 function ENT:PhysicsUpdate(phys)
 	if not self.DieTime or not self.sky then return end
 	if CurTime() >= self.DieTime then self:Remove() return end
 
+	-- Destroyed tumble: hand off to Havok, just apply extra gravity & check ground
 	if self:IsDestroyed() then
 		local dt = FrameTime()
 		if dt <= 0 then dt = 0.01 end
@@ -548,14 +555,16 @@ function ENT:PhysicsUpdate(phys)
 		return
 	end
 
+	-- Dive physics handled in UpdateDive / Think
 	if self.Diving then return end
+
+	local dt = FrameTime()
+	if dt <= 0 then dt = 0.01 end
 
 	local pos     = self:GetPos()
 	local forward = self:GetForward()
-	local dt      = FrameTime()
-	if dt <= 0 then dt = 0.01 end
 
-	-- Wander
+	-- Wander center
 	self.WanderPhaseX = self.WanderPhaseX + self.WanderRateX
 	self.WanderPhaseY = self.WanderPhaseY + self.WanderRateY
 	self.CenterPos = Vector(
@@ -568,20 +577,23 @@ function ENT:PhysicsUpdate(phys)
 	self:EvaluateSkyProbes(forward, pos)
 	self:EvaluateObstacleProbes(forward, pos)
 
-	-- Orbit advance (with evasion biases injected)
-	self.OrbitAngSpeed = (self.Speed / self.OrbitRadius) * self.OrbitDir
-	                   + self.SkyYawBias
-	                   + self.ObsYawBias
-	self.OrbitAngle = self.OrbitAngle + self.OrbitAngSpeed * dt
+	-- AN-71 yaw steering:
+	--   1. If outside orbit radius, steer inward.
+	--   2. Sky and obstacle biases add on top.
+	local flat2D = Vector(pos.x - self.CenterPos.x, pos.y - self.CenterPos.y, 0)
+	local dist2D = flat2D:Length()
 
-	local desiredX = self.CenterPos.x + math.cos(self.OrbitAngle) * self.OrbitRadius
-	local desiredY = self.CenterPos.y + math.sin(self.OrbitAngle) * self.OrbitRadius
+	if dist2D > self.OrbitRadius and CurTime() > self.TurnDelay then
+		self.flightYaw = self.flightYaw + 0.12 * self.OrbitDir
+		self.TurnDelay = CurTime() + 0.02
+	end
 
-	local tangentYaw    = math.deg(self.OrbitAngle) + 90 * self.OrbitDir
-	local yawError      = math.NormalizeAngle(tangentYaw - self.ang.y)
-	local yawCorrection = math.Clamp(yawError * 0.08, -0.6, 0.6)
-	self.ang = self.ang + Angle(0, yawCorrection, 0)
+	-- Inject sky & obstacle yaw biases (degrees per second, scaled by dt)
+	self.flightYaw = self.flightYaw
+	              + math.deg(self.SkyYawBias) * dt
+	              + math.deg(self.ObsYawBias) * dt
 
+	-- Altitude: Lerp drift target, add sine jitter - all delivered via velocity (no SetPos Z)
 	self.JitterPhase  = self.JitterPhase  + self.JitterRate1
 	self.JitterPhase2 = self.JitterPhase2 + self.JitterRate2
 	local jitter = math.sin(self.JitterPhase)  * self.JitterAmp1
@@ -593,44 +605,44 @@ function ENT:PhysicsUpdate(phys)
 	end
 	self.AltDriftCurrent = Lerp(self.AltDriftLerp, self.AltDriftCurrent, self.AltDriftTarget)
 
-	local liveAlt = self.AltDriftCurrent + jitter + self.ObsAltBias
+	local targetZ  = self.AltDriftCurrent + jitter + self.ObsAltBias
+	local altError = targetZ - pos.z
+	local velZ     = math.Clamp(altError * 2.5, -120, 120)  -- proportional Z velocity, no teleport
 
-	local posErr = Vector(desiredX - pos.x, desiredY - pos.y, 0)
-	local vel    = self:GetForward() * self.Speed
-	if posErr:LengthSqr() > 400 then
-		vel = vel + posErr:GetNormalized() * 80
-	end
+	-- Build flat forward velocity from flightYaw
+	local yawRad    = math.rad(self.flightYaw)
+	local flatFwd   = Vector(math.cos(yawRad), math.sin(yawRad), 0)
+	local vel       = flatFwd * self.Speed
+	vel.z           = velZ
 
-	self:SetPos(Vector(pos.x, pos.y, liveAlt))
-
-	local rawYawDelta = math.NormalizeAngle(self.ang.y - (self.PrevYaw or self.ang.y))
-	self.PrevYaw      = self.ang.y
+	-- Smooth yaw display (AN-71 identical math)
+	local rawYawDelta = math.NormalizeAngle(self.flightYaw - (self.PrevYaw or self.flightYaw))
+	self.PrevYaw      = self.flightYaw
 
 	local targetRoll  = math.Clamp(rawYawDelta * -25, -30, 30)
 	local rollLerp    = rawYawDelta ~= 0 and 0.15 or 0.05
 	self.SmoothedRoll = Lerp(rollLerp, self.SmoothedRoll, targetRoll)
 
-	local physVel      = IsValid(phys) and phys:GetVelocity() or Vector(0,0,0)
-	local forwardSpeed = physVel:Dot(self:GetForward())
+	local forwardSpeed = vel:Dot(flatFwd)
 	local speedRatio   = math.Clamp(forwardSpeed / self.Speed, 0, 1)
 	local targetPitch  = math.Clamp(speedRatio * 10, -15, 15)
 	self.SmoothedPitch = Lerp(0.04, self.SmoothedPitch, targetPitch)
 
-	self.ang.p = self.SmoothedPitch
-	self.ang.r = self.SmoothedRoll
+	self.ang = Angle(self.SmoothedPitch, self.flightYaw, self.SmoothedRoll)
 	self:SetAngles(self.ang)
 
 	if IsValid(phys) then
 		phys:SetVelocity(vel)
 	end
 
+	-- Out-of-world recovery (no teleport: just rewind angle to face center)
 	if not self:IsInWorld() then
-		self:Debug("Out of world -- recentering")
-		self:SetPos(Vector(self.CenterPos.x, self.CenterPos.y, self.sky))
-		self.OrbitAngle = math.atan2(
-			self:GetPos().y - self.CenterPos.y,
-			self:GetPos().x - self.CenterPos.x
-		)
+		self:Debug("Out of world - recentering yaw")
+		local toCenter = self.CenterPos - pos
+		toCenter.z = 0
+		if toCenter:LengthSqr() > 1 then
+			self.flightYaw = toCenter:Angle().y
+		end
 	end
 end
 
@@ -677,7 +689,7 @@ function ENT:PickNewWeapon(ct)
 end
 
 -- ============================================================
--- SLOT 3 -- DIVE
+-- SLOT 3 - DIVE
 -- ============================================================
 
 function ENT:InitDive(ct)
@@ -729,7 +741,7 @@ function ENT:InitDive(ct)
 		self.PhysObj:EnableGravity(false)
 	end
 
-	self:Debug("DIVE: committed -- aim offset " .. tostring(self.DiveAimOffset))
+	self:Debug("DIVE: committed - aim offset " .. tostring(self.DiveAimOffset))
 end
 
 function ENT:UpdateDive(ct)
